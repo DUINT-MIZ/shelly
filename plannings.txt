@@ -1,0 +1,3 @@
+How do I differentiate a token that is a literal and a token that is product of an expression
+
+
