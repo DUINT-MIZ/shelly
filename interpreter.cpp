@@ -1,3 +1,5 @@
+#include <expected>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <iostream>
@@ -100,7 +102,7 @@ with constraints of :
     d. enum must have sentinel constant with value of n
     e. each TagInfo within table must correspond to enum constant it tries to describe
 */
-constexpr auto tag_infos = 
+static constexpr auto tag_infos = 
     sparse_array<TagInfo, to_integral(ttag::SENT)>(
         {
             {to_integral(ttag::EOFILE), TagInfo{{0.0, 0.0}, false, false}},
@@ -115,8 +117,12 @@ constexpr auto tag_infos =
 static_assert(tag_infos.initialized == to_integral(ttag::SENT), "tag_infos must be fully populated");
 
 struct Token {
-    double num_val;
+    using NumT = double;
+    NumT num_val;
     ttag tag;
+    Token() = default;
+    Token(NumT num) : num_val(num), tag(ttag::NUMBER) {}
+    Token(ttag tag) : tag(tag) {}
 };
 
 /*
@@ -126,7 +132,7 @@ Fetching enum constant from a char.
 simply use a 256 sized array
 highly expandable for adding additional feature
 */
-constexpr auto scop_infos =
+static constexpr auto scop_infos =
     char_array<ttag>(
         {
             {'+', ttag::PLUS},
@@ -224,3 +230,215 @@ void tokenize(const std::string_view& str, std::vector<Token>& tokens) {
         throw std::invalid_argument("invalid string sequence");
     }
 }
+
+
+class Lexer {
+    private :
+    std::vector<Token> tokens;
+    Token eof_tok = Token(ttag::EOFILE);
+    std::size_t curr_idx = 0;
+
+    const Token& fetch(std::size_t idx) noexcept {
+        if(idx >= tokens.size()) return eof_tok;
+        return tokens[idx];
+    }
+
+    public :
+    Lexer(const std::string_view& str) {
+        tokenize(str, tokens);
+    }
+
+    void analyze(const std::string_view& str) {
+        tokens.clear();
+        tokenize(str, tokens);
+        curr_idx = 0;
+    }
+
+    const Token& next() noexcept { return fetch(curr_idx++); }
+    const Token& peek() noexcept { return fetch(curr_idx); }
+    void advance() noexcept { ++curr_idx; }
+    void retreat() noexcept { --curr_idx; }
+};
+
+
+class ExprNode {
+    public:
+    virtual Token eval() = 0;
+    virtual ~ExprNode() = default;
+};
+
+class LiteralExpr : public ExprNode {
+    public :
+    Token val;
+
+    LiteralExpr(const Token& tok) : val(tok) {}
+
+    Token eval() override {
+        return val;
+    }
+
+    static std::unique_ptr<ExprNode> literal_expr(const Token& tok) {
+        return std::make_unique<LiteralExpr>(tok);
+    }
+
+    ~LiteralExpr() = default;
+};
+
+class BinaryExpr : public ExprNode {
+    public :
+
+    using method_signature = Token (*)(const BinaryExpr&);
+
+    Token eval() override {
+        method_signature method = get_method(fn_idx);
+        if(!method)
+            throw std::runtime_error("BinaryExpr -> eval() : failed to fetch correct eval method");
+        return method(*this);
+    }
+
+    static std::pair<Token, Token> get_num(const BinaryExpr& obj) {
+        Token lhs = obj.lhs->eval();
+        Token rhs = obj.rhs->eval();
+        if((lhs.tag != ttag::NUMBER) || (rhs.tag != ttag::NUMBER))
+            throw std::runtime_error("BinaryExpr::get_num() : Invalid returned Token from rhs or lhs eval()");
+        return {lhs, rhs};
+    }
+
+    static Token eval_plus(const BinaryExpr& obj) {
+        auto [lhs, rhs] = get_num(obj);
+        return Token(lhs.num_val + rhs.num_val);
+    }
+
+    static Token eval_minus(const BinaryExpr& obj) {
+        auto [lhs, rhs] = get_num(obj);
+        return Token(lhs.num_val - rhs.num_val);
+    }
+
+    static Token eval_star(const BinaryExpr& obj) {
+        auto [lhs, rhs] = get_num(obj);
+        return Token(lhs.num_val * rhs.num_val);
+    }
+
+    static Token eval_slash(const BinaryExpr& obj) {
+        auto [lhs, rhs] = get_num(obj);
+        return Token(lhs.num_val / rhs.num_val);
+    }
+
+    static constexpr auto evftable =
+        sparse_array<method_signature, to_integral(ttag::SENT)>(
+            {
+                {to_integral(ttag::MINUS), eval_minus},
+                {to_integral(ttag::PLUS), eval_plus},
+                {to_integral(ttag::STAR), eval_star},
+                {to_integral(ttag::SLASH), eval_slash}
+            }, nullptr
+        );
+    
+    static method_signature get_method(std::size_t idx) {
+        if(idx >= evftable.table.size()) return nullptr;
+        return evftable.table[idx];
+    }
+
+    static method_signature get_method(ttag tag) {
+        return get_method(to_integral(tag));
+    }
+
+    static std::expected<std::unique_ptr<ExprNode>, std::string>
+    binary_expr(
+        std::unique_ptr<ExprNode>&& lhs,
+        std::unique_ptr<ExprNode>&& rhs,
+        ttag tag
+    )
+    {
+        if(!rhs || !lhs || !get_method(tag)) return std::unexpected{"lhs, rhs, or tag is invalid"};
+        return std::make_unique<BinaryExpr>(std::move(BinaryExpr(std::move(lhs), std::move(rhs), to_integral(tag))));
+    }
+
+    ~BinaryExpr() = default;
+
+    BinaryExpr(BinaryExpr&& oth)
+        : lhs(std::move(oth.lhs)),
+          rhs(std::move(oth.rhs)),
+          fn_idx(oth.fn_idx) {}
+
+    private :
+
+    BinaryExpr(std::unique_ptr<ExprNode>&& lhs, std::unique_ptr<ExprNode>&& rhs, unsigned int idx)
+        : lhs(std::move(lhs)), rhs(std::move(rhs)), fn_idx(idx) {}
+
+    std::unique_ptr<ExprNode> lhs;
+    std::unique_ptr<ExprNode> rhs;
+    unsigned int fn_idx;
+};
+
+class UnaryExpr : public ExprNode {
+    public :
+    using method_signature = Token (*)(const UnaryExpr&);
+
+    static Token get_num(const UnaryExpr& obj) {
+        Token res = obj.expr->eval();
+        if(res.tag != ttag::NUMBER)
+            throw std::runtime_error("UnaryExpr::get_num() : expr->eval() returned token tag is not NUMBER");
+        return res;
+    }
+
+    static method_signature get_method(unsigned int idx) {
+        if(idx >= evftable.table.size())
+            return nullptr;
+        return evftable.table[idx];
+    }
+
+    static method_signature get_method(ttag tag) {
+        return get_method(to_integral(tag));
+    }
+
+    static Token eval_plus(const UnaryExpr& obj) {
+        return get_num(obj);
+    }
+
+    static Token eval_minus(const UnaryExpr& obj) {
+        return Token(get_num(obj).num_val * -1);
+    }
+
+    static constexpr auto evftable =
+        sparse_array<method_signature, to_integral(ttag::SENT)>
+        ( {
+            {to_integral(ttag::PLUS), eval_plus},
+            {to_integral(ttag::MINUS), eval_minus}
+          }, nullptr
+        );
+
+
+    static std::expected<std::unique_ptr<ExprNode>, std::string>
+    unary_expr(std::unique_ptr<ExprNode>&& expr, ttag tag) {
+        if(!expr || !get_method(tag))
+            return std::unexpected{"UnaryExpr::unary_expr() : invalid expr or tag"};
+        return std::make_unique<UnaryExpr>(std::move(UnaryExpr(std::move(expr), to_integral(tag))));
+    }
+
+    Token eval() override {
+        method_signature method = get_method(fn_idx);
+        if(!method)
+            throw std::runtime_error("UnaryExpr -> eval() : unknown method");
+        return method(*this);
+    }
+
+    ~UnaryExpr() = default;
+
+    UnaryExpr(UnaryExpr&& oth)
+        : expr(std::move(oth.expr)),
+          fn_idx(oth.fn_idx) {}
+
+    private :
+    UnaryExpr(std::unique_ptr<ExprNode>&& ptr, unsigned int fn_idx)
+        : expr(std::move(ptr)), fn_idx(fn_idx) {}
+
+    std::unique_ptr<ExprNode> expr;
+    unsigned int fn_idx;
+};
+
+/*
+This commit is not planned to be fully used for now.
+Planning for implementation within nud or led is still complicated
+with the nature of std::unique_ptr being uncopiable
+*/
