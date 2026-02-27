@@ -1,4 +1,4 @@
-#include <expected>
+#include <optional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -113,6 +113,13 @@ static constexpr auto tag_infos =
             {to_integral(ttag::STAR), TagInfo{{2.0, 2.1}, true, false}}
         }
     );
+
+constexpr std::optional<TagInfo> tag_info(ttag tag) {
+    auto idx = to_integral(tag);
+    if(idx >= tag_infos.table.size()) return std::nullopt;
+    return tag_infos.table[idx];
+}
+
 
 static_assert(tag_infos.initialized == to_integral(ttag::SENT), "tag_infos must be fully populated");
 
@@ -267,21 +274,25 @@ class ExprNode {
     virtual ~ExprNode() = default;
 };
 
-class LiteralExpr : public ExprNode {
+class ValueExpr : public ExprNode {
     public :
-    Token val;
+    
+    Token eval() override { return dat; }
 
-    LiteralExpr(const Token& tok) : val(tok) {}
-
-    Token eval() override {
-        return val;
+    static bool valid_tag(ttag tag) {
+        auto info = tag_info(tag);
+        return (info ? info->is_value : false);
     }
 
-    static std::unique_ptr<ExprNode> literal_expr(const Token& tok) {
-        return std::make_unique<LiteralExpr>(tok);
+    ValueExpr(const Token& tok) {
+        if(!valid_tag(tok.tag))
+            throw std::invalid_argument("ValueExpr(ctor) : invalid tag on tok argument");
+        dat = tok;
     }
 
-    ~LiteralExpr() = default;
+    ~ValueExpr() = default;
+    private :
+    Token dat;
 };
 
 class BinaryExpr : public ExprNode {
@@ -296,31 +307,31 @@ class BinaryExpr : public ExprNode {
         return method(*this);
     }
 
-    static std::pair<Token, Token> get_num(const BinaryExpr& obj) {
+    static std::pair<Token, Token> evalget_num(const BinaryExpr& obj) {
         Token lhs = obj.lhs->eval();
         Token rhs = obj.rhs->eval();
         if((lhs.tag != ttag::NUMBER) || (rhs.tag != ttag::NUMBER))
-            throw std::runtime_error("BinaryExpr::get_num() : Invalid returned Token from rhs or lhs eval()");
+            throw std::runtime_error("BinaryExpr::evalget_num() : Invalid returned Token from rhs or lhs eval()");
         return {lhs, rhs};
     }
 
     static Token eval_plus(const BinaryExpr& obj) {
-        auto [lhs, rhs] = get_num(obj);
+        auto [lhs, rhs] = evalget_num(obj);
         return Token(lhs.num_val + rhs.num_val);
     }
 
     static Token eval_minus(const BinaryExpr& obj) {
-        auto [lhs, rhs] = get_num(obj);
+        auto [lhs, rhs] = evalget_num(obj);
         return Token(lhs.num_val - rhs.num_val);
     }
 
     static Token eval_star(const BinaryExpr& obj) {
-        auto [lhs, rhs] = get_num(obj);
+        auto [lhs, rhs] = evalget_num(obj);
         return Token(lhs.num_val * rhs.num_val);
     }
 
     static Token eval_slash(const BinaryExpr& obj) {
-        auto [lhs, rhs] = get_num(obj);
+        auto [lhs, rhs] = evalget_num(obj);
         return Token(lhs.num_val / rhs.num_val);
     }
 
@@ -343,28 +354,26 @@ class BinaryExpr : public ExprNode {
         return get_method(to_integral(tag));
     }
 
-    static std::expected<std::unique_ptr<ExprNode>, std::string>
-    binary_expr(
+    static bool valid_tag(ttag tag) {
+        return (get_method(tag) != nullptr);
+    }
+
+    ~BinaryExpr() = default;
+
+    BinaryExpr(
         std::unique_ptr<ExprNode>&& lhs,
         std::unique_ptr<ExprNode>&& rhs,
         ttag tag
     )
     {
-        if(!rhs || !lhs || !get_method(tag)) return std::unexpected{"lhs, rhs, or tag is invalid"};
-        return std::make_unique<BinaryExpr>(std::move(BinaryExpr(std::move(lhs), std::move(rhs), to_integral(tag))));
+        if(!lhs || !rhs || !valid_tag(tag))
+            throw std::invalid_argument("BinaryExpr(ctor) : lhs/rhs is nullptr OR tag argument is invalid");
+        this->lhs = std::move(lhs);
+        this->rhs = std::move(rhs);
+        this->fn_idx = to_integral(tag);
     }
 
-    ~BinaryExpr() = default;
-
-    BinaryExpr(BinaryExpr&& oth)
-        : lhs(std::move(oth.lhs)),
-          rhs(std::move(oth.rhs)),
-          fn_idx(oth.fn_idx) {}
-
     private :
-
-    BinaryExpr(std::unique_ptr<ExprNode>&& lhs, std::unique_ptr<ExprNode>&& rhs, unsigned int idx)
-        : lhs(std::move(lhs)), rhs(std::move(rhs)), fn_idx(idx) {}
 
     std::unique_ptr<ExprNode> lhs;
     std::unique_ptr<ExprNode> rhs;
@@ -375,10 +384,10 @@ class UnaryExpr : public ExprNode {
     public :
     using method_signature = Token (*)(const UnaryExpr&);
 
-    static Token get_num(const UnaryExpr& obj) {
+    static Token evalget_num(const UnaryExpr& obj) {
         Token res = obj.expr->eval();
         if(res.tag != ttag::NUMBER)
-            throw std::runtime_error("UnaryExpr::get_num() : expr->eval() returned token tag is not NUMBER");
+            throw std::runtime_error("UnaryExpr::evalget_num() : expr->eval() returned token tag is not NUMBER");
         return res;
     }
 
@@ -393,11 +402,11 @@ class UnaryExpr : public ExprNode {
     }
 
     static Token eval_plus(const UnaryExpr& obj) {
-        return get_num(obj);
+        return evalget_num(obj);
     }
 
     static Token eval_minus(const UnaryExpr& obj) {
-        return Token(get_num(obj).num_val * -1);
+        return Token(evalget_num(obj).num_val * -1);
     }
 
     static constexpr auto evftable =
@@ -408,12 +417,8 @@ class UnaryExpr : public ExprNode {
           }, nullptr
         );
 
-
-    static std::expected<std::unique_ptr<ExprNode>, std::string>
-    unary_expr(std::unique_ptr<ExprNode>&& expr, ttag tag) {
-        if(!expr || !get_method(tag))
-            return std::unexpected{"UnaryExpr::unary_expr() : invalid expr or tag"};
-        return std::make_unique<UnaryExpr>(std::move(UnaryExpr(std::move(expr), to_integral(tag))));
+    static bool valid_tag(ttag tag) {
+        return get_method(tag) != nullptr;
     }
 
     Token eval() override {
@@ -425,14 +430,14 @@ class UnaryExpr : public ExprNode {
 
     ~UnaryExpr() = default;
 
-    UnaryExpr(UnaryExpr&& oth)
-        : expr(std::move(oth.expr)),
-          fn_idx(oth.fn_idx) {}
-
+    UnaryExpr(std::unique_ptr<ExprNode>&& ptr, ttag tag) {
+        if(!ptr || !valid_tag(tag))
+            throw std::invalid_argument("UnaryExpr(ctor) : ptr argument is nullptr OR tag is invalid");
+        expr = std::move(ptr);
+        fn_idx = to_integral(tag);
+    }
+          
     private :
-    UnaryExpr(std::unique_ptr<ExprNode>&& ptr, unsigned int fn_idx)
-        : expr(std::move(ptr)), fn_idx(fn_idx) {}
-
     std::unique_ptr<ExprNode> expr;
     unsigned int fn_idx;
 };
