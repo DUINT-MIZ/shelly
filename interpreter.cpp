@@ -270,6 +270,10 @@ class Lexer {
 
 class ExprNode {
     public:
+    /*
+    Polymorphic class for AST.
+    Avoids type problem
+    */
     virtual Token eval() = 0;
     virtual ~ExprNode() = default;
 };
@@ -335,6 +339,10 @@ class BinaryExpr : public ExprNode {
         return Token(lhs.num_val / rhs.num_val);
     }
 
+    /*
+        evftable abbreviated from "eval function table"
+        this is preferred over switch case, avoids messy code
+    */
     static constexpr auto evftable =
         sparse_array<method_signature, to_integral(ttag::SENT)>(
             {
@@ -441,9 +449,3 @@ class UnaryExpr : public ExprNode {
     std::unique_ptr<ExprNode> expr;
     unsigned int fn_idx;
 };
-
-/*
-This commit is not planned to be fully used for now.
-Planning for implementation within nud or led is still complicated
-with the nature of std::unique_ptr being uncopiable
-*/
