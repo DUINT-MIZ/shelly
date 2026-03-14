@@ -315,12 +315,6 @@ class NumExpr : public Expr {
 
 class BinExpr : public Expr {
     public :
-    
-    BinExpr(
-        std::unique_ptr<Expr>&& lhs,
-        std::unique_ptr<Expr>&& rhs,
-        token_tag tag
-    ) : tag(tag), lhs(std::move(lhs)), rhs(std::move(rhs)) {}
 
     static std::unique_ptr<BinExpr> 
         bin_expr(
@@ -337,6 +331,31 @@ class BinExpr : public Expr {
     std::optional<std::string> accept(Evaluator& ev, valtype* val_buf) {
         return ev.visit(*this, *val_buf);
     }
+
+    // potential repetitive usage may use exceptions, even though it is a "general procedure".
+    // to reduce the amount of boilerplate
+
+    void set_lhs(std::unique_ptr<Expr>&& lhs) {
+        if(lhs)
+            this->lhs = std::move(lhs);
+        else
+            throw std::invalid_argument("BinExpr::set_lhs() : lhs argument is empty");
+    }
+
+    void set_rhs(std::unique_ptr<Expr>&& rhs) {
+        if(rhs)
+            this->rhs = std::move(rhs);
+        else
+            throw std::invalid_argument("BinExpr::set_lhs() : lhs argument is empty");
+    }
+
+    private :
+    
+    BinExpr(
+        std::unique_ptr<Expr>&& lhs,
+        std::unique_ptr<Expr>&& rhs,
+        token_tag tag
+    ) : tag(tag), lhs(std::move(lhs)), rhs(std::move(rhs)) {}
 
     std::unique_ptr<Expr> lhs;
     std::unique_ptr<Expr> rhs;

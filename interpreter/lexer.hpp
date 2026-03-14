@@ -1,5 +1,7 @@
 #pragma once
 #include "basics.hpp"
+#include <expected>
+#include <vector>
 #include <iostream>
 #include <string>
 #include <fstream>
@@ -41,7 +43,7 @@ class Feed {
             throw std::invalid_argument("Feed(ctor) : Invalid read_source argument");
     }
 
-    bool get(std::string& buffer) {
+    bool line_get(std::string& buffer) {
         switch (this->read_source)
         {
         case PROMPT :
@@ -59,10 +61,14 @@ class Feed {
         return false;
     }
 
-    std::optional<std::string> get() {
+    std::optional<std::string> line_get() {
         std::string line;
-        if(!get(line)) return std::nullopt;
+        if(!line_get(line)) return std::nullopt;
         return line;
+    }
+
+    bool eof() {
+        return stream.eof();
     }
 
     ~Feed() {
@@ -81,10 +87,10 @@ constexpr auto chrtag_table =
     });
 
 struct token_match_result {
-    bool result = false;
+    bool status = false;
     const char* ptr = nullptr;
-    token_match_result(bool v, const char* ptr = nullptr) : result(v), ptr(ptr) {}
-    token_match_result(const char* ptr) :  ptr(ptr), result(true) {}
+    token_match_result(bool v, const char* ptr = nullptr) : status(v), ptr(ptr) {}
+    token_match_result(const char* ptr) :  ptr(ptr), status(true) {}
 };
 
 token_match_result token_1char(basics::Token& buf, const char* it) {
@@ -95,8 +101,6 @@ token_match_result token_1char(basics::Token& buf, const char* it) {
 
 token_match_result token_number(basics::Token& buf, const char* begin, const char* end) {
     const char* it = begin;
-    
-    if(it >= end) return false;
 
     bool has_comma = false;
     bool has_e = false;
@@ -116,18 +120,27 @@ token_match_result token_number(basics::Token& buf, const char* begin, const cha
         {
         case '-' :
         case '+' :
-            if(has_digit || has_pm) return false;
+            if(has_digit || has_pm) {
+                end = it;
+                continue;
+            }
             has_pm = true;
             break;
 
         case '.' :
-            if(has_e || has_comma || !has_digit) return false;
+            if(has_e || has_comma || !has_digit) {
+                end = it;
+                continue;
+            }
             has_comma = true;
             break;
         
         case 'E' :
         case 'e' :
-            if(has_e || !has_digit) return false;
+            if(has_e || !has_digit) {
+                end = it;
+                continue;;
+            }
             has_e = true;
             has_digit = false;
             has_pm = false;
@@ -141,11 +154,57 @@ token_match_result token_number(basics::Token& buf, const char* begin, const cha
         ++it;
     }
     if(!has_digit) return false;
+
     buf.tag = ttag::INTEGER;
     buf.value = std::string_view(begin, it);
     return it;
 }
 
+class Lexer {
+    public :
+    Lexer() = default;
 
+    bool analyze(Feed& feeder) {
+        this->line.clear(); 
+        this->tokens.clear();
+        if(!feeder.line_get(this->line)) return false;
+        ++this->line_count;
+        const auto begin = &*this->line.cbegin();
+        const auto end = &*this->line.cend();
+        auto it = begin;
+        basics::Token buf;
+
+        auto insert = [&it, &buf, this](const token_match_result& result) -> bool {
+            if(!result.status)
+                return false;
+            
+            this->tokens.push_back(buf);
+            it = result.ptr;
+            return true;
+        };
+
+        while(it < end) {
+            if(std::isspace(*it)) { ++it; continue; }
+
+            if(insert(token_1char(buf, it))) continue;
+            if(insert(token_number(buf, it, end))) continue;
+            
+            throw std::runtime_error(
+                "Lexer error at line "
+                + std::to_string(this->line_count)
+                + ", column "
+                + std::to_string(it - begin)
+            );
+        }
+        return true;
+    }
+
+    const auto& get_tokens() const noexcept { return tokens; }
+
+    private :
+    std::size_t line_count = 0;
+    std::string line;
+    std::vector<basics::Token> tokens;
+};
 
 };

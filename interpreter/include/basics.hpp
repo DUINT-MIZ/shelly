@@ -5,7 +5,41 @@
 #include <string_view>
 #include "utilities.hpp"
 
+/*
+Procedure = A one or more set of instructions packed within same context.
+
+General Procedure = A procedure that may appear almost everywhere
+
+A General Procedure must not use exceptions, unless it's repetitive or constexpr.
+The definition of repetitive in this context is, 
+a kind of instructions that may executed repeatedly within the same code context.
+Only then the use of exceptions is permitted to reduce boilerplate.
+
+Exceptions only allowed on the outer scope of a General Procedure.
+this so that an error caused by a General Procedure can be spotted seamlessly
+
+NOTE :
+General Procedure does NOT only include helper.
+It could also include a medium-heavy operation,
+in our case, General Procedure includes classes of CST Nodes
+
+##################################################
+
+namespaces :
+    util, basics, asts, evaluator, parser
+
+*/
+
+
 namespace basics {
+
+/*
+
+
+*/
+
+
+using valtype = std::variant<std::monostate, int>;
 
 using tag_base = std::uint8_t;
 enum class token_tag {
